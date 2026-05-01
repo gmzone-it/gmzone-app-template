@@ -1,0 +1,45 @@
+# === Secrets e configurazioni locali (MAI committare) ===
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# === Sops/age decifrati ===
+*.dec
+*.decrypted
+
+# === Output di backup, log, runtime ===
+*.log
+*.bak
+*.tmp
+data/
+volumes/
+backups/
+
+# === macOS ===
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# === Editor / IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# === Docker ===
+.docker/
+
+# === Python (script ausiliari) ===
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
