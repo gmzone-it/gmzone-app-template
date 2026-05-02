@@ -277,12 +277,20 @@ jobs:
       - name: Trivy image scan (SARIF, blocking)
         # Trivy publishes 'master' as the stable, recommended tag (see their
         # official docs). Patch-level tags like 0.28.0 are not always pushed.
+        #
+        # IMPORTANT: by default, when format=sarif the action ignores the
+        # `severity` filter for both the SARIF output AND the exit code,
+        # so any single LOW/MEDIUM CVE would fail the build.
+        # 'limit-severities-for-sarif: true' makes both the SARIF and the
+        # exit code respect `severity: HIGH,CRITICAL`. See:
+        # https://github.com/aquasecurity/trivy-action#limit-severities-for-sarif
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
           format: sarif
           output: trivy-results.sarif
           severity: HIGH,CRITICAL
+          limit-severities-for-sarif: true
           exit-code: '1'
           ignore-unfixed: true
 
