@@ -1,0 +1,10 @@
+# Project metadata + tool configuration.
+# Kept minimal on purpose — apps generated from this template can extend
+# this file (or replace it) with their own metadata.
+
+[tool.pytest.ini_options]
+# Make the project root importable so `from app.main import app` works
+# regardless of the current working directory pytest is invoked from.
+pythonpath = ["."]
+testpaths = ["app/tests"]
+addopts = "-v --strict-markers"
