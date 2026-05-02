@@ -125,21 +125,15 @@ jobs:
             --sarif --output=semgrep.sarif \
             .
 
-      # ---- Upload SARIF as artifact (workaround for free-tier private repos) -
-      # NOTE: GitHub Code Scanning (Security tab) requires GitHub Advanced
-      # Security, which is free on PUBLIC repos but PAID on PRIVATE repos
-      # in Free/Team orgs. Until the repo is public or GHAS is enabled, we
-      # fall back to uploading the SARIF reports as run artifacts. They're
-      # downloadable from the Actions page and inspectable as JSON.
-      # When GHAS is available, replace the two upload-artifact steps with
-      # 'github/codeql-action/upload-sarif@v3' and add 'security-events: write'.
-      - name: Upload Semgrep SARIF as artifact
+      # ---- Upload Semgrep SARIF to GitHub Code Scanning (Security tab) ----
+      # GHAS is free on public repos, so SARIF goes directly to the
+      # repository Security → Code scanning alerts page.
+      - name: Upload Semgrep SARIF
         if: always() && hashFiles('semgrep.sarif') != ''
-        uses: actions/upload-artifact@v4
+        uses: github/codeql-action/upload-sarif@v3
         with:
-          name: semgrep-sarif
-          path: semgrep.sarif
-          retention-days: 30
+          sarif_file: semgrep.sarif
+          category: semgrep
 
       # ---- 3. OWASP Dependency-Check (SCA: CVEs in dependencies) ----------
       # Uses the NVD_API_KEY secret to bypass the unauthenticated rate limit
@@ -163,17 +157,16 @@ jobs:
             --enableRetired
             --enableExperimental
 
-      - name: Upload Dependency-Check SARIF as artifact
+      - name: Upload Dependency-Check SARIF
         if: always() && hashFiles('reports/dependency-check-report.sarif') != ''
-        uses: actions/upload-artifact@v4
+        uses: github/codeql-action/upload-sarif@v3
         with:
-          name: dependency-check-sarif
-          path: reports/dependency-check-report.sarif
-          retention-days: 30
+          sarif_file: reports/dependency-check-report.sarif
+          category: dependency-check
 
       # ---- Aggregate: human-readable summary in the run page -------------
       # GitHub renders $GITHUB_STEP_SUMMARY as Markdown on the run summary,
-      # so we get a quick at-a-glance view without needing to download artifacts.
+      # so we get a quick at-a-glance view without needing to leave the page.
       - name: Write security scan summary
         if: always()
         run: |
@@ -186,8 +179,7 @@ jobs:
             echo "| Semgrep (SAST)             | ${{ steps.semgrep.outcome || 'n/a' }} |"
             echo "| OWASP Dep-Check (CVE)      | ${{ steps.depcheck.outcome || 'n/a' }} |"
             echo ""
-            echo "SARIF reports are uploaded as artifacts (see the Artifacts section above)."
-            echo "On free-tier private repos the GitHub Security tab is not available."
+            echo "Detailed findings: **Security → Code scanning alerts** in this repo."
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ---- Fail the job if any scanner reported HIGH/CRITICAL findings ----
@@ -201,7 +193,7 @@ jobs:
           echo "Gitleaks outcome: ${{ steps.gitleaks.outcome }}"
           echo "Semgrep outcome:  ${{ steps.semgrep.outcome }}"
           echo "DepCheck outcome: ${{ steps.depcheck.outcome }}"
-          echo "Download the SARIF artifacts to inspect findings."
+          echo "See Security → Code scanning alerts for details."
           exit 1
 
   # ---------------------------------------------------------------------------
@@ -272,13 +264,12 @@ jobs:
           exit-code: '1'
           ignore-unfixed: true
 
-      - name: Upload Trivy SARIF as artifact
+      - name: Upload Trivy SARIF
         if: always() && hashFiles('trivy-results.sarif') != ''
-        uses: actions/upload-artifact@v4
+        uses: github/codeql-action/upload-sarif@v3
         with:
-          name: trivy-sarif
-          path: trivy-results.sarif
-          retention-days: 30
+          sarif_file: trivy-results.sarif
+          category: trivy
 
       # ---- SBOM (Software Bill of Materials) via Syft ---------------------
       - name: Generate SBOM
