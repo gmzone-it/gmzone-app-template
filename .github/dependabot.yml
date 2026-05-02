@@ -1,0 +1,92 @@
+---
+# Dependabot config for gmzone-app-template
+#
+# Strategy:
+#   - Weekly schedule (Monday morning Europe/Rome) — bunch the noise
+#   - Group minor + patch into ONE PR per ecosystem; majors stay separate
+#     so they get individual review (breaking changes warrant attention).
+#   - Open-PRs cap of 5 per ecosystem to avoid flood.
+#   - Conventional-commit prefix matches the rest of the repo's history,
+#     so squash-merge messages stay consistent.
+#
+# What gets watched:
+#   1. Python deps inside app/  (requirements.txt + requirements-dev.txt)
+#   2. GitHub Actions versions in .github/workflows/
+#   3. Base image of Dockerfile (python:3.12-slim) at the repo root
+#
+# Each PR will trigger the build-and-publish pipeline, which runs the
+# full security gauntlet (Gitleaks + Semgrep + OWASP Dep-Check + Trivy +
+# Cosign). So a green Dependabot PR = "safe to merge".
+
+version: 2
+updates:
+
+  # ----------------------------------------------------------------------
+  # 1. Python dependencies (FastAPI, uvicorn, pytest, ...)
+  # ----------------------------------------------------------------------
+  - package-ecosystem: "pip"
+    directory: "/app"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Rome"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "python"
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+      include: "scope"
+    groups:
+      python-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+      python-security:
+        applies-to: security-updates
+        # Security updates always grouped together — fix everything at once.
+
+  # ----------------------------------------------------------------------
+  # 2. GitHub Actions used by .github/workflows/*.yml
+  # ----------------------------------------------------------------------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Rome"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"
+    commit-message:
+      prefix: "ci(deps)"
+      include: "scope"
+    groups:
+      actions-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ----------------------------------------------------------------------
+  # 3. Docker base image (python:3.12-slim → security patches)
+  # ----------------------------------------------------------------------
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Rome"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "chore(docker)"
+      include: "scope"
