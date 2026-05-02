@@ -102,9 +102,17 @@ jobs:
           python-version: '3.12'
 
       - name: Install Semgrep
-        run: pip install semgrep==1.95.0
+        # setuptools must be installed explicitly: on Python 3.12+ it is no
+        # longer included by default, and Semgrep depends on pkg_resources
+        # which lives inside setuptools. Without this you get
+        # 'ModuleNotFoundError: No module named pkg_resources'.
+        run: pip install setuptools semgrep==1.95.0
 
       - name: Run Semgrep
+        # continue-on-error so dep-check can still run even if semgrep fails;
+        # we want ALL scanners to report their findings before the job fails.
+        continue-on-error: true
+        id: semgrep
         run: |
           semgrep \
             --config=p/security-audit \
@@ -125,7 +133,11 @@ jobs:
       # ---- 3. OWASP Dependency-Check (SCA: CVEs in dependencies) ----------
       # Uses the NVD_API_KEY secret to bypass the unauthenticated rate limit
       # (5 req/30s → 50 req/30s). Set the key once in repo Secrets.
+      # if: always() so this scanner runs even if semgrep failed above.
       - name: OWASP Dependency-Check
+        if: always()
+        continue-on-error: true
+        id: depcheck
         uses: dependency-check/Dependency-Check_Action@main
         with:
           project: gmzone-app-template
@@ -146,6 +158,21 @@ jobs:
         with:
           sarif_file: reports/dependency-check-report.sarif
           category: dependency-check
+
+      # ---- Aggregate: fail the job if any scanner found HIGH/CRITICAL ----
+      # Each scanner above runs with continue-on-error so they all collect
+      # findings; this final step makes the job red if any of them flagged
+      # something. Findings are still uploaded to the Security tab.
+      - name: Fail if any security scanner reported issues
+        if: |
+          steps.semgrep.outcome == 'failure' ||
+          steps.depcheck.outcome == 'failure'
+        run: |
+          echo "::error::Security scanners reported HIGH/CRITICAL findings."
+          echo "Semgrep outcome:  ${{ steps.semgrep.outcome }}"
+          echo "DepCheck outcome: ${{ steps.depcheck.outcome }}"
+          echo "See the Security tab → Code scanning alerts for details."
+          exit 1
 
   # ---------------------------------------------------------------------------
   # Job 3: build, scan image, sign, publish
