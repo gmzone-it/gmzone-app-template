@@ -1,5 +1,11 @@
 # Pinned versions on purpose — gives reproducible builds and lets
-# OWASP Dependency-Check and Dependabot do their job properly.
+# OWASP Dependency-Check, Trivy, and Dependabot do their job properly.
 # Update via Dependabot PRs, not manually.
-fastapi==0.115.5
+#
+# starlette is a transitive dependency of fastapi but we pin it explicitly
+# because security CVEs (DoS, request smuggling, ...) typically land on
+# starlette directly. Pinning it here means Dependabot watches it
+# and Trivy/DepCheck flag deviations independently of the fastapi bump cycle.
+fastapi==0.136.1
+starlette==0.52.1
 uvicorn[standard]==0.32.1
