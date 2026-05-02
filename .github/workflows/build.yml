@@ -1,0 +1,264 @@
+---
+# DevSecOps pipeline for gmzone-app-template
+#
+# Stages (in order, all must pass for a release to happen):
+#   1. test           → pytest on the FastAPI app
+#   2. security-scan  → Gitleaks (secrets) + Semgrep (SAST) + OWASP Dep-Check (SCA)
+#   3. build-publish  → Build → Trivy (image CVE) → SBOM → push GHCR → Cosign keyless sign
+#
+# Failure policy:
+#   - HIGH or CRITICAL findings = pipeline FAILS, no image is published.
+#   - MEDIUM/LOW = uploaded to GitHub Security tab as warnings, pipeline stays green.
+#
+# Triggers:
+#   - push to main         → full pipeline, image tagged 'sha-<short>' + 'latest'
+#   - push tag v*          → full pipeline, image tagged with the version
+#   - pull_request         → test + security-scan only (no publish)
+#
+# Outputs:
+#   - SARIF reports in the Security tab (Code scanning alerts)
+#   - Signed multi-tag image on ghcr.io/gmzone-it/<repo>
+#   - SBOM attached to the image (cosign attest)
+
+name: build-and-publish
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+# Only the latest run per branch/PR is kept; older ones are cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  # github.repository = 'gmzone-it/gmzone-app-template' → image name follows that
+  IMAGE_NAME: ${{ github.repository }}
+
+# Default to read-only; each job declares the writes it needs.
+permissions:
+  contents: read
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # Job 1: unit tests
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r app/requirements.txt -r app/requirements-dev.txt
+
+      - name: Run pytest
+        run: pytest app/tests/ -v
+
+  # ---------------------------------------------------------------------------
+  # Job 2: security scans (Gitleaks, Semgrep, OWASP Dep-Check)
+  # Runs in parallel with 'test' to shorten total pipeline time.
+  # ---------------------------------------------------------------------------
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # to upload SARIF to the Security tab
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # gitleaks needs full git history, not just last commit
+
+      # ---- 1. Gitleaks (secret scanning, on source + history) -------------
+      # We install the binary directly instead of using gitleaks-action,
+      # which requires a license on private repos.
+      - name: Install Gitleaks
+        run: |
+          GITLEAKS_VERSION=8.21.2
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | sudo tar -xzC /usr/local/bin gitleaks
+
+      - name: Run Gitleaks
+        run: gitleaks detect --source . --redact --verbose --no-banner
+
+      # ---- 2. Semgrep (SAST: bugs, antipatterns, security smells) ---------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Semgrep
+        run: pip install semgrep==1.95.0
+
+      - name: Run Semgrep
+        run: |
+          semgrep \
+            --config=p/security-audit \
+            --config=p/python \
+            --config=p/dockerfile \
+            --severity=ERROR --severity=WARNING \
+            --error \
+            --sarif --output=semgrep.sarif \
+            .
+
+      - name: Upload Semgrep SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      # ---- 3. OWASP Dependency-Check (SCA: CVEs in dependencies) ----------
+      # Uses the NVD_API_KEY secret to bypass the unauthenticated rate limit
+      # (5 req/30s → 50 req/30s). Set the key once in repo Secrets.
+      - name: OWASP Dependency-Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: gmzone-app-template
+          path: '.'
+          format: SARIF
+          # --failOnCVSS 7   = fail if any vulnerability with CVSS >= 7.0 (HIGH+)
+          # --enableRetired  = scan even retired/EOL libraries
+          # --enableExperimental = include experimental analyzers
+          args: >
+            --nvdApiKey ${{ secrets.NVD_API_KEY }}
+            --failOnCVSS 7
+            --enableRetired
+            --enableExperimental
+
+      - name: Upload Dependency-Check SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/dependency-check-report.sarif
+          category: dependency-check
+
+  # ---------------------------------------------------------------------------
+  # Job 3: build, scan image, sign, publish
+  # Runs only on push (not on PRs) and only after test+scan have passed.
+  # ---------------------------------------------------------------------------
+  build-publish:
+    name: Build & Publish
+    runs-on: ubuntu-latest
+    needs: [test, security-scan]
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write          # to push to ghcr.io
+      id-token: write          # for cosign keyless OIDC signing
+      security-events: write   # for trivy SARIF upload
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Compute tags + labels in one place. Tags rule:
+      #   - any push      → 'sha-<short>'
+      #   - main branch   → also 'latest'
+      #   - tag v1.2.3    → also 'v1.2.3'
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ github.ref_name }}
+            GIT_SHA=${{ github.sha }}
+            BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ---- Trivy: vulnerability scan of the BUILT image -------------------
+      # Works on the immutable digest (not a tag), so we scan exactly what we just pushed.
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          ignore-unfixed: true
+
+      - name: Upload Trivy SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy
+
+      # ---- SBOM (Software Bill of Materials) via Syft ---------------------
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: true
+          upload-release-assets: false
+
+      # ---- Cosign keyless signing (Sigstore + GitHub OIDC) ----------------
+      # No keys to manage — the signature is bound to this workflow's OIDC token.
+      # Verifiable by anyone with: cosign verify --certificate-identity-regexp ...
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image with Cosign (keyless)
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          cosign sign --yes \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+
+      - name: Attest SBOM with Cosign (keyless)
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          cosign attest --yes \
+            --predicate sbom.spdx.json \
+            --type spdxjson \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+
+      - name: Pipeline summary
+        run: |
+          echo "### ✅ Image published & signed" >> $GITHUB_STEP_SUMMARY
+          echo "**Tags:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "**Digest:** \`${{ steps.build.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY

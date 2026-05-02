@@ -1,0 +1,5 @@
+# Development / CI dependencies — never installed in the runtime image.
+# These are only used by GitHub Actions for testing.
+# Pinned for reproducibility — Dependabot keeps them up to date.
+pytest==8.3.4
+httpx==0.28.1

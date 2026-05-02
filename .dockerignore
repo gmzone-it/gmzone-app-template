@@ -1,0 +1,28 @@
+# Things that should NEVER end up in the docker build context
+.git
+.github
+.gitignore
+.dockerignore
+README.md
+
+# Python local artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Tests don't go in the runtime image
+app/tests/
+
+# Compose / k8s manifests aren't needed inside the image
+docker-compose.yml
+docker-compose.*.yml

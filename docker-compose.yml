@@ -1,0 +1,38 @@
+---
+# Deployment template — to be customized per app instance.
+# When deploying:
+#   - replace IMAGE_TAG (or use an .env file with IMAGE_TAG=v1.2.3)
+#   - replace SERVICE_NAME with the actual app name
+#   - add specific env vars / volumes / networks as needed
+#
+# Same hardening pattern as gmzone-infra/stacks/demo-hello/:
+# attached only to the shared 'proxy' network (NPM is the only entry point),
+# read-only filesystem, dropped caps, mem/cpu limits.
+
+services:
+  app:
+    image: ghcr.io/gmzone-it/SERVICE_NAME:${IMAGE_TAG:-latest}
+    container_name: SERVICE_NAME
+    restart: unless-stopped
+    networks:
+      - proxy
+    read_only: true
+    tmpfs:
+      - /tmp:size=16M
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=2).status==200 else sys.exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  proxy:
+    external: true
+    name: proxy
