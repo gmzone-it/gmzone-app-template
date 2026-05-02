@@ -255,7 +255,9 @@ jobs:
       # ---- Trivy: vulnerability scan of the BUILT image -------------------
       # Works on the immutable digest (not a tag), so we scan exactly what we just pushed.
       - name: Trivy image scan
-        uses: aquasecurity/trivy-action@0.28.0
+        # Trivy publishes 'master' as the stable, recommended tag (see their
+        # official docs). Patch-level tags like 0.28.0 are not always pushed.
+        uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
           format: sarif
